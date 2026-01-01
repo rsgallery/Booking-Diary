@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>इवेंट और बुकिंग डायरी - क्लाउड</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        // Firebase Configuration
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'booking-diary-app';
+
+        // State variables
+        let bookings = [];
+        let isEditing = false;
+        let currentUser = null;
+
+        // UI Elements
+        const form = document.getElementById('bookingForm');
+        const listElement = document.getElementById('bookingList');
+        const noData = document.getElementById('noData');
+        const totalCount = document.getElementById('totalCount');
+        const toast = document.getElementById('toast');
+        const submitBtn = document.getElementById('submitBtn');
+        const cancelBtn = document.getElementById('cancelBtn');
+        const formTitle = document.getElementById('formTitle');
+        const userStatus = document.getElementById('userStatus');
+
+        // Authentication Logic (RULE 3)
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth Error:", error);
+            }
+        };
+
+        initAuth();
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                userStatus.innerText = `कनेक्टेड आईडी: ${user.uid}`;
+                setupLiveUpdates();
+            } else {
+                userStatus.innerText = "डिस्कनेक्टेड";
+            }
+        });
+
+        // Setup Firestore Real-time Listener (RULE 1 & 2)
+        function setupLiveUpdates() {
+            if (!currentUser) return;
+
+            const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
+            
+            // Simple query without complex filtering (RULE 2)
+            onSnapshot(collectionRef, (snapshot) => {
+                bookings = [];
+                snapshot.forEach((doc) => {
+                    bookings.push({ id: doc.id, ...doc.data() });
+                });
+                renderBookings();
+            }, (error) => {
+                console.error("Firestore Error:", error);
+                showToast("डेटा लोड करने में समस्या आई।");
+            });
+        }
+
+        // Add or Update Logic
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!currentUser) return;
+
+            const bookingData = {
+                name: document.getElementById('eventName').value,
+                location: document.getElementById('location').value,
+                start: document.getElementById('startDate').value,
+                end: document.getElementById('endDate').value,
+                cameras: document.getElementById('cameraCount').value,
+                amount: document.getElementById('amount').value,
+                updatedBy: currentUser.uid,
+                timestamp: Date.now()
+            };
+
+            try {
+                if (isEditing) {
+                    const editId = document.getElementById('editId').value;
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bookings', editId);
+                    await updateDoc(docRef, bookingData);
+                    showToast("जानकारी अपडेट कर दी गई है!");
+                } else {
+                    const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
+                    await addDoc(collectionRef, bookingData);
+                    showToast("नई बुकिंग सेव हो गई है!");
+                }
+                resetForm();
+            } catch (error) {
+                showToast("एरर: डेटा सेव नहीं हो सका।");
+            }
+        });
+
+        // Delete Logic
+        window.deleteBooking = async (docId) => {
+            if (!currentUser) return;
+            if (confirm('क्या आप वाकई इसे डिलीट करना चाहते हैं?')) {
+                try {
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bookings', docId);
+                    await deleteDoc(docRef);
+                    showToast("रिकॉर्ड हटा दिया गया है।");
+                } catch (error) {
+                    showToast("डिलीट करने में एरर आया।");
+                }
+            }
+        };
+
+        // Edit Mode Logic
+        window.editBooking = (docId) => {
+            const item = bookings.find(b => b.id === docId);
+            if (!item) return;
+
+            isEditing = true;
+            document.getElementById('editId').value = item.id;
+            document.getElementById('eventName').value = item.name;
+            document.getElementById('location').value = item.location;
+            document.getElementById('startDate').value = item.start;
+            document.getElementById('endDate').value = item.end;
+            document.getElementById('cameraCount').value = item.cameras;
+            document.getElementById('amount').value = item.amount;
+
+            submitBtn.innerText = "अभी अपडेट करें";
+            formTitle.innerText = "बुकिंग सुधारें (Live Edit)";
+            cancelBtn.classList.remove('hidden');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+
+        window.resetForm = () => {
+            isEditing = false;
+            form.reset();
+            submitBtn.innerText = "सेव करें";
+            formTitle.innerText = "नई बुकिंग जोड़ें";
+            cancelBtn.classList.add('hidden');
+        };
+
+        cancelBtn.onclick = window.resetForm;
+
+        function showToast(msg) {
+            toast.innerText = msg;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+
+        function renderBookings() {
+            listElement.innerHTML = '';
+            noData.classList.toggle('hidden', bookings.length > 0);
+            totalCount.innerText = `कुल बुकिंग: ${bookings.length}`;
+
+            bookings.forEach((item, index) => {
+                const row = document.createElement('tr');
+                row.className = "hover:bg-indigo-50 transition-colors";
+                row.innerHTML = `
+                    <td class="px-4 py-4 text-base text-gray-700">${index + 1}</td>
+                    <td class="px-4 py-4 text-base font-bold text-gray-900">${item.name}</td>
+                    <td class="px-4 py-4 text-base text-indigo-600 font-medium">${item.location}</td>
+                    <td class="px-4 py-4 text-sm text-gray-500">
+                        ${item.start} से <br> ${item.end}
+                    </td>
+                    <td class="px-4 py-4 text-base text-gray-700 font-bold">${item.cameras}</td>
+                    <td class="px-4 py-4 text-lg font-bold text-green-700">₹${parseFloat(item.amount).toLocaleString('hi-IN')}</td>
+                    <td class="px-4 py-4 text-right space-x-4">
+                        <button onclick="editBooking('${item.id}')" class="text-indigo-600 font-bold hover:underline">एडिट</button>
+                        <button onclick="deleteBooking('${item.id}')" class="text-red-600 font-bold hover:underline">हटाएं</button>
+                    </td>
+                `;
+                listElement.appendChild(row);
+            });
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;700&display=swap');
+        body { font-family: 'Noto Sans Devanagari', sans-serif; background-color: #f3f4f6; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .btn-primary { background-color: #4f46e5; color: white; }
+        input { border: 1px solid #d1d5db; padding: 0.75rem; border-radius: 0.5rem; width: 100%; font-size: 1.1rem; }
+        label { font-size: 1.05rem; font-weight: 600; color: #374151; margin-bottom: 0.25rem; display: block; }
+        .form-header { font-size: 1.5rem; border-bottom: 2px solid #e5e7eb; padding-bottom: 0.5rem; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-6xl mx-auto">
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800">इवेंट डायरी (Cloud)</h1>
+            <p id="userStatus" class="text-sm text-indigo-500 font-bold mt-2 italic">कनेक्ट हो रहा है...</p>
+        </div>
+
+        <div class="card p-8 mb-8 border-t-4 border-indigo-500">
+            <h2 id="formTitle" class="form-header font-bold mb-6 text-indigo-700">नई बुकिंग जोड़ें</h2>
+            <form id="bookingForm" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <input type="hidden" id="editId">
+                <div><label>कार्यक्रम का नाम</label><input type="text" id="eventName" required></div>
+                <div><label>स्थान (Sthan)</label><input type="text" id="location" required></div>
+                <div><label>दिनांक से</label><input type="date" id="startDate" required></div>
+                <div><label>दिनांक तक</label><input type="date" id="endDate" required></div>
+                <div><label>कैमरा संख्या</label><input type="number" id="cameraCount" min="0" required></div>
+                <div><label>एमाउंट राशि (₹)</label><input type="number" id="amount" min="0" required></div>
+                <div class="flex items-end gap-3 md:col-span-2 lg:col-span-3">
+                    <button type="submit" id="submitBtn" class="btn-primary flex-1 py-3 px-6 rounded-lg text-xl font-bold hover:bg-indigo-700">सेव करें</button>
+                    <button type="button" id="cancelBtn" class="hidden bg-gray-200 text-gray-700 px-6 py-3 rounded-lg text-xl font-bold">रद्द करें</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="card p-6">
+            <div class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+                <h2 class="text-2xl font-bold text-indigo-700">लाइव बुकिंग सूची</h2>
+                <div class="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-full font-bold text-lg" id="totalCount">कुल: 0</div>
+            </div>
+            <div class="overflow-x-auto border rounded-lg">
+                <table class="min-w-full divide-y divide-gray-200 text-left">
+                    <thead class="bg-indigo-600 text-white">
+                        <tr>
+                            <th class="px-4 py-4">क्र.सं.</th>
+                            <th class="px-4 py-4">कार्यक्रम</th>
+                            <th class="px-4 py-4">स्थान</th>
+                            <th class="px-4 py-4">तारीख</th>
+                            <th class="px-4 py-4">कैमरा</th>
+                            <th class="px-4 py-4">राशि</th>
+                            <th class="px-4 py-4 text-right">एक्शन</th>
+                        </tr>
+                    </thead>
+                    <tbody id="bookingList" class="bg-white divide-y divide-gray-200"></tbody>
+                </table>
+            </div>
+            <div id="noData" class="text-center py-10 text-xl text-gray-400">नेटवर्क चेक करें या नई बुकिंग जोड़ें।</div>
+        </div>
+    </div>
+    <div id="toast" class="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-8 py-4 rounded-xl shadow-2xl hidden z-50 text-lg font-bold"></div>
+</body>
+</html>
